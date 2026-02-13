@@ -296,6 +296,7 @@ def compose_label_png(code: str, name: str) -> str:
     img.save(out_path)
     return out_path
 
+
 # ---------------------------
 # UI Helpers
 # ---------------------------
@@ -567,6 +568,11 @@ class MainWindow(QMainWindow):
         self.in_memo.setPlaceholderText("メモ（任意）")
 
         btn_row = QHBoxLayout()
+
+        dummy = QLabel()
+        dummy.setFixedWidth(155)
+        btn_row.addWidget(dummy)
+
         btn_load = QPushButton("読込")
         btn_save = QPushButton("入庫登録")
         btn_load.clicked.connect(self._in_load_item)
@@ -672,6 +678,11 @@ class MainWindow(QMainWindow):
 
         # --- ボタン ---
         btn_row = QHBoxLayout()
+
+        dummy = QLabel()
+        dummy.setFixedWidth(155)
+        btn_row.addWidget(dummy)
+
         btn_load = QPushButton("読込")
         btn_save = QPushButton("出庫登録")
         btn_load.clicked.connect(self._out_load_item)
@@ -779,33 +790,38 @@ class MainWindow(QMainWindow):
     def _build_master_tab(self):
         layout = QVBoxLayout()
 
-        top = QHBoxLayout()
+        # ---- form（把コード也放进来，保证对齐）----
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignLeft)
+
         self.master_code = QLineEdit()
         self.master_code.setPlaceholderText("編集はコードで検索")
+        # ✅ 回车自动检索
+        self.master_code.returnPressed.connect(self.master_find)
+
         btn_find = QPushButton("検索")
-        btn_new = QPushButton("新規（自動採番）")
-        btn_save = QPushButton("保存")
-        btn_label = QPushButton("ラベル作成（PNG）")
-
         btn_find.clicked.connect(self.master_find)
+
+        # ✅ 代码输入框 + 搜索按钮放在同一行（并且属于 form）
+        code_row = QHBoxLayout()
+        code_row.setContentsMargins(0, 0, 0, 0)
+
+        btn_new = QPushButton("新規（自動採番）")
         btn_new.clicked.connect(self.master_new)
-        btn_save.clicked.connect(self.master_save)
-        btn_label.clicked.connect(self.master_make_label)
 
-        top.addWidget(QLabel("コード"))
-        top.addWidget(self.master_code)
-        top.addWidget(btn_find)
-        top.addStretch()
-        top.addWidget(btn_new)
-        top.addWidget(btn_save)
-        top.addWidget(btn_label)
+        code_row.addWidget(self.master_code)
+        code_row.addWidget(btn_find)
+        code_row.addWidget(btn_new)
+        code_row.addStretch()
+        form.addRow("コード", code_row)
 
-        form = QFormLayout()
+        # ---- 其他字段（保持你的原样）----
         self.master_name = QLineEdit()
         self.master_location = QLineEdit()
         self.master_unit = QLineEdit()
         self.master_safety = QSpinBox()
         self.master_safety.setRange(0, 100000)
+        self.master_safety.setFixedWidth(120)
         self.master_note = QTextEdit()
 
         form.addRow("備品名*", self.master_name)
@@ -814,8 +830,25 @@ class MainWindow(QMainWindow):
         form.addRow("安全在庫", self.master_safety)
         form.addRow("メモ", self.master_note)
 
-        layout.addLayout(top)
+        # ---- 按钮行（原 top 的其余按钮移到下面，不影响对齐）----
+        btn_row = QHBoxLayout()
+
+        dummy = QLabel()
+        dummy.setFixedWidth(70)
+        btn_row.addWidget(dummy)
+
+        btn_save = QPushButton("保存")
+        btn_label = QPushButton("ラベル作成（PNG）")
+
+        btn_save.clicked.connect(self.master_save)
+        btn_label.clicked.connect(self.master_make_label)
+
+        btn_row.addWidget(btn_save)
+        btn_row.addWidget(btn_label)
+        btn_row.addStretch()
+
         layout.addLayout(form)
+        layout.addLayout(btn_row)
         layout.addStretch()
         self.tab_master.setLayout(layout)
 
