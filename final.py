@@ -1,7 +1,6 @@
 import os
 import sqlite3
 from datetime import datetime
-from dataclasses import dataclass
 
 from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
@@ -14,20 +13,19 @@ from PySide6.QtWidgets import (
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-# Barcode + label
 import barcode
 from barcode.writer import ImageWriter
 from PIL import Image, ImageDraw, ImageFont
 
 
-APP_TITLE = "備品在庫管理システム"
-BASE_DIR = os.path.join(os.path.expanduser("~"), "Documents", "ZaikoKanri")
+APP_TITLE = "備品在庫管理"
+BASE_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BihinKanri")
 os.makedirs(BASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 LABEL_DIR = os.path.join(BASE_DIR, "labels")
 
 
-# ======== database layer ========
+# ======== データベース ========
 class DB:
     def __init__(self, path: str = DB_FILE):
         self.path = path
@@ -63,17 +61,15 @@ class DB:
             type TEXT NOT NULL,
             item_id INTEGER NOT NULL,
             qty INTEGER NOT NULL,
-
-            supplier TEXT,          -- 入庫：購入先（IN用）
-            user TEXT,              -- 入庫：担当者 / 出庫：納品先
+            supplier TEXT,          -- 入庫：購入先
+            user TEXT,              -- 入庫：担当者 
+            destination TEXT,       -- 出庫：納品先
             requester TEXT,         -- 出庫：発注者
             admin_handler TEXT,     -- 出庫：総務課納品担当者
-
             memo TEXT,
             FOREIGN KEY(item_id) REFERENCES items(id)
         );
         """)
-
         self.conn.commit()
 
     def close(self):
@@ -142,7 +138,6 @@ class DB:
     def list_items(self, keyword: str = ""):
         kw = f"%{(keyword or '').strip()}%"
         cur = self.conn.cursor()
-
         cur.execute("""
             SELECT i.*, COALESCE(s.qty, 0) AS qty
             FROM items i
@@ -161,7 +156,6 @@ class DB:
               )
             ORDER BY CAST(i.code AS INTEGER) ASC;
         """, (kw, kw, kw, kw, kw))
-
         return cur.fetchall()
 
     def list_transactions_by_type(self, tx_type: str, keyword: str = "", limit: int = 5000,
@@ -176,7 +170,12 @@ class DB:
             where_ts = " AND t.ts >= ? AND t.ts < ? "
             params += [start_ts, end_ts]
 
-        params += [kw, kw, kw, kw, kw, kw, kw, kw, kw, int(limit)]
+        params += [
+            kw, kw, kw, kw,     # i.code, i.name, i.location, i.note
+            kw, kw,             # t.user, t.destination
+            kw, kw, kw, kw,     # t.memo, t.supplier, t.requester, t.admin_handler
+            int(limit)
+        ]
 
         cur.execute(f"""
             SELECT t.*, i.code, i.name, i.unit
@@ -190,6 +189,7 @@ class DB:
                  OR COALESCE(i.location,'') LIKE ?
                  OR COALESCE(i.note,'') LIKE ?
                  OR COALESCE(t.user,'') LIKE ?
+                 OR COALESCE(t.destination,'') LIKE ?
                  OR COALESCE(t.memo,'') LIKE ?
                  OR COALESCE(t.supplier,'') LIKE ?
                  OR COALESCE(t.requester,'') LIKE ?
@@ -217,26 +217,21 @@ class DB:
         """, (ts, item_id, qty, supplier, user, memo))
         self.conn.commit()
 
-    def add_out_tx(self, item_id: int, qty: int,
-                   destination: str, requester: str,
-                   admin_handler: str, memo: str):
+    def add_out_tx(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO transactions
-            (ts, type, item_id, qty, user, requester, admin_handler, memo)
+            (ts, type, item_id, qty, destination, requester, admin_handler, memo)
             VALUES (?, 'OUT', ?, ?, ?, ?, ?, ?);
         """, (ts, item_id, qty, destination, requester, admin_handler, memo))
         self.conn.commit()
 
     def in_stock(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
-        # 入庫：在庫を増やす
         self._update_stock(item_id, qty)
         self.add_in_tx(item_id, qty, supplier, user, memo)
 
-    def out_stock(self, item_id: int, qty: int,
-                  destination: str, requester: str,
-                  admin_handler: str, memo: str):
+    def out_stock(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
         self._update_stock(item_id, -qty)
         self.add_out_tx(item_id, qty, destination, requester, admin_handler, memo)
 
@@ -907,7 +902,7 @@ class MainWindow(QMainWindow):
 
         self.in_hist_year.addItem("全部")
         # 先用固定范围（最稳）；你也可以改成动态取DB最小最大年份
-        for y in range(2026, 2036):
+        for y in range(2026, 2037):
             self.in_hist_year.addItem(str(y))
 
         self.in_hist_month.addItem("全部")
@@ -1081,7 +1076,7 @@ class MainWindow(QMainWindow):
 
         self.out_hist_year.addItem("全部")
         # 先用固定范围（最稳）；你也可以改成动态取DB最小最大年份
-        for y in range(2026, 2036):
+        for y in range(2026, 2037):
             self.out_hist_year.addItem(str(y))
 
         self.out_hist_month.addItem("全部")
@@ -1155,7 +1150,7 @@ class MainWindow(QMainWindow):
             self.out_hist_table.setItem(row, 2, qitem(r["name"]))
             self.out_hist_table.setItem(row, 3, qitem(str(int(r["qty"]))))
             self.out_hist_table.setItem(row, 4, qitem(unit))
-            self.out_hist_table.setItem(row, 5, qitem(r["user"] or ""))  # 納品先
+            self.out_hist_table.setItem(row, 5, qitem(r["destination"] or ""))  # 納品先
             self.out_hist_table.setItem(row, 6, qitem(r["requester"] or ""))  # 発注者
             self.out_hist_table.setItem(row, 7, qitem(r["admin_handler"] or ""))  # 総務課納品担当者
             self.out_hist_table.setItem(row, 8, qitem(r["memo"] or ""))
@@ -1192,7 +1187,7 @@ class MainWindow(QMainWindow):
                     r["name"],
                     int(r["qty"]),
                     r["unit"] or "",
-                    r["user"] or "",  # 納品先
+                    r["destination"] or "",  # 納品先
                     r["requester"] or "",  # 発注者
                     r["admin_handler"] or "",  # 総務課納品担当者
                     r["memo"] or ""
@@ -1231,7 +1226,7 @@ class MainWindow(QMainWindow):
                 r["name"],
                 int(r["qty"]),
                 r["unit"] or "",
-                r["user"] or "",  # 納品先
+                r["destination"] or "",  # 納品先
                 r["requester"] or "",  # 発注者
                 r["admin_handler"] or "",  # 総務課納品担当者
                 r["memo"] or ""
@@ -1263,4 +1258,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
