@@ -76,27 +76,38 @@ class DB:
         self.conn.close()
 
     def get_next_code(self) -> str:
-        """
-        備品コード：
-        - 数字のみ
-        - 10001 から開始
-        - 欠番があれば最小の欠番を採番
-        """
         cur = self.conn.cursor()
-        cur.execute("""
-            SELECT code FROM items
-            WHERE code GLOB '[0-9]*';
-        """)
+        cur.execute("SELECT code FROM items WHERE code GLOB '[0-9]*';")
         used = set()
         for row in cur.fetchall():
             try:
                 used.add(int(row["code"]))
             except:
                 pass
+
         n = 10001
         while n in used:
             n += 1
         return str(n)
+
+    def deactivate_item_free_code(self, item_id: int):
+        cur = self.conn.cursor()
+        cur.execute("SELECT code FROM items WHERE id=?;", (item_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("item not found")
+
+        old_code = row["code"]
+        date_str = datetime.now().strftime("%Y%m")
+        retired_code = f"X{old_code}_{date_str}廃止"
+
+        cur.execute("""
+            UPDATE items
+            SET is_active=0,
+                code=?
+            WHERE id=?;
+        """, (retired_code, item_id))
+        self.conn.commit()
 
     def add_item(self, code: str, name: str, location: str, unit: str, safety_stock: int, note: str):
         cur = self.conn.cursor()
@@ -609,7 +620,9 @@ class MainWindow(QMainWindow):
         # -- 入力内容クリア --
         self.in_code.clear()
         self.in_supplier.clear()
+        self.in_user.clear()
         self.in_memo.clear()
+        self.in_qty.setValue(1)
         self.in_name.setText("-")
         self.in_stock.setText("-")
         self.refresh_all()
@@ -741,6 +754,7 @@ class MainWindow(QMainWindow):
         self.out_requester.clear()
         self.out_admin_handler.clear()
         self.out_memo.clear()
+        self.out_qty.setValue(1)
         self.out_name.setText("-")
         self.out_stock.setText("-")
         self.out_safety.setText("-")
@@ -797,11 +811,14 @@ class MainWindow(QMainWindow):
 
         btn_save = QPushButton("保存")
         btn_label = QPushButton("ラベル作成（PNG）")
+        btn_del = QPushButton("削除")
         btn_save.clicked.connect(self.master_save)
         btn_label.clicked.connect(self.master_make_label)
+        btn_del.clicked.connect(self.master_delete)
 
         btn_row.addWidget(btn_save)
         btn_row.addWidget(btn_label)
+        btn_row.addWidget(btn_del)
         btn_row.addStretch()
 
         layout.addLayout(form)
@@ -880,6 +897,43 @@ class MainWindow(QMainWindow):
             info(self, "完了", f"ラベルを作成しました。\nPNG: {png}")
         except Exception as e:
             warn(self, "エラー", f"ラベル作成に失敗しました：{e}")
+
+    def master_delete(self):
+        if self._master_item_id is None:
+            warn(self, "削除", "先にコードで検索して、削除する備品を表示してください。")
+            return
+
+        code = self.master_code.text().strip()
+        name = self.master_name.text().strip()
+
+        ret = QMessageBox.question(
+            self,
+            "削除確認",
+            f"以下の備品を削除します。\n\nコード: {code}\n備品名: {name}\n\nよろしいですか？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        try:
+            self.db.deactivate_item_free_code(self._master_item_id)
+        except Exception as e:
+            warn(self, "エラー", f"削除に失敗しました：{e}")
+            return
+
+        info(self, "完了", "削除しました。番号は再利用できます。")
+
+        # 画面クリア
+        self._master_item_id = None
+        self.master_code.clear()
+        self.master_name.clear()
+        self.master_location.clear()
+        self.master_unit.clear()
+        self.master_safety.setValue(0)
+        self.master_note.clear()
+
+        self.refresh_all()
+        self.master_code.setFocus()
 
     # ---- Tab: in History
     def _build_in_history_tab(self):
@@ -1248,4 +1302,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
+
