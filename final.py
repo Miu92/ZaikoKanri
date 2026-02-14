@@ -80,26 +80,23 @@ class DB:
         備品コード：
         - 数字のみ
         - 10001 から開始
+        - 欠番があれば最小の欠番を採番
         """
         cur = self.conn.cursor()
         cur.execute("""
             SELECT code FROM items
-            WHERE code GLOB '[0-9]*'
-            ORDER BY CAST(code AS INTEGER) DESC
-            LIMIT 1;
+            WHERE code GLOB '[0-9]*';
         """)
-        row = cur.fetchone()
-
-        if not row:
-            return "10001"
-
-        try:
-            num = int(row["code"])
-        except:
-            num = 10000
-
-        num += 1
-        return str(num)
+        used = set()
+        for row in cur.fetchall():
+            try:
+                used.add(int(row["code"]))
+            except:
+                pass
+        n = 10001
+        while n in used:
+            n += 1
+        return str(n)
 
     def add_item(self, code: str, name: str, location: str, unit: str, safety_stock: int, note: str):
         cur = self.conn.cursor()
@@ -236,70 +233,55 @@ class DB:
         self.add_out_tx(item_id, qty, destination, requester, admin_handler, memo)
 
 
-# ---------------------------
-# Label & Barcode
-# ---------------------------
+# ======== バーコード作り ========
 def ensure_dirs():
     os.makedirs(LABEL_DIR, exist_ok=True)
 
 def generate_barcode_png(code: str) -> str:
     ensure_dirs()
-    # Code128 supports alphanumerics
     cls = barcode.get_barcode_class("code128")
     bc = cls(code, writer=ImageWriter())
     out_base = os.path.join(LABEL_DIR, f"{code}_barcode")
-    filename = bc.save(out_base)  # generates ...png
+    filename = bc.save(out_base)
     return filename
 
 def compose_label_png(code: str, name: str) -> str:
     """
     Create a simple label image:
-      - item name (large)
+      - item name
       - barcode
-      - code text
     """
     ensure_dirs()
     barcode_png = generate_barcode_png(code)
 
-    # Canvas size (pixels). Adjust as you like.
     W, H = 800, 400
     img = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(img)
 
-    # Try to load a font; fallback if not found
     font_big = None
-    font_small = None
     for f in ["meiryo.ttc", "MSYH.TTC", "arial.ttf"]:
         try:
             font_big = ImageFont.truetype(f, 44)
-            font_small = ImageFont.truetype(f, 28)
             break
         except:
             continue
     if font_big is None:
         font_big = ImageFont.load_default()
-        font_small = ImageFont.load_default()
 
-    # Name
+    # 備品名
     draw.text((20, 15), name, fill="black", font=font_big)
 
-    # Barcode
+    # バーコード
     bc_img = Image.open(barcode_png).convert("RGB")
-    # Resize barcode to fit
-    bc_img = bc_img.resize((760, 180))
+    bc_img = bc_img.resize((760, 300))
     img.paste(bc_img, (20, 110))
-
-    # Code text
-    draw.text((20, 310), f"コード: {code}", fill="black", font=font_small)
 
     out_path = os.path.join(LABEL_DIR, f"{code}_label.png")
     img.save(out_path)
     return out_path
 
 
-# ---------------------------
-# UI Helpers
-# ---------------------------
+# ======== UIサポート ========
 def qitem(text: str) -> QTableWidgetItem:
     it = QTableWidgetItem(text if text is not None else "")
     it.setFlags(it.flags() ^ Qt.ItemIsEditable)
@@ -312,9 +294,7 @@ def info(parent, title, msg):
     QMessageBox.information(parent, title, msg)
 
 
-# ---------------------------
-# Main Window
-# ---------------------------
+# ======== 操作画面 ========
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -324,7 +304,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        # Tabs
+        # タブ
         self.tab_stock = QWidget()
         self.tab_in = QWidget()
         self.tab_out = QWidget()
@@ -349,11 +329,6 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def _get_period_range(self, year_text: str, month_text: str):
-        """
-        year_text: "全部" or "2026" ...
-        month_text: "全部" or "01".."12"
-        return (label, start_ts, end_ts)
-        """
         if year_text == "全部":
             return "ALL", None, None
 
@@ -384,10 +359,11 @@ class MainWindow(QMainWindow):
         self.refresh_in_history()
         self.refresh_out_history()
 
-    # ---- Tab: Stock list
+    # 在庫一覧
     def _build_stock_tab(self):
         layout = QVBoxLayout()
 
+        # 検索欄
         top = QHBoxLayout()
         self.stock_search = QLineEdit()
         self.stock_search.setPlaceholderText("コード / 備品名 / 保管場所で検索")
@@ -395,6 +371,7 @@ class MainWindow(QMainWindow):
         btn_search.clicked.connect(self.refresh_stock_list)
         self.stock_search.returnPressed.connect(self.refresh_stock_list)
 
+        # ボタン
         btn_csv = QPushButton("CSV出力")
         btn_xlsx = QPushButton("Excel出力")
         btn_csv.clicked.connect(self.export_stock_csv)
@@ -406,6 +383,7 @@ class MainWindow(QMainWindow):
         top.addWidget(btn_csv)
         top.addWidget(btn_xlsx)
 
+        # 表示順
         self.stock_table = QTableWidget(0, 6)
         self.stock_table.setHorizontalHeaderLabels(
             ["コード", "備品名", "保管場所", "在庫数", "安全在庫", "状態"]
@@ -422,30 +400,34 @@ class MainWindow(QMainWindow):
         rows = self.db.list_items(keyword)
 
         self.stock_table.setRowCount(0)
+
         for r in rows:
             row = self.stock_table.rowCount()
             self.stock_table.insertRow(row)
 
+            code = r["code"]
+            name = r["name"]
+            location = r["location"] or ""
+            unit = r["unit"] or ""
+
             qty = int(r["qty"])
             safety = int(r["safety_stock"] or 0)
-            status = "OK" if qty >= safety else "不足"
-
-            self.stock_table.setItem(row, 0, qitem(r["code"]))
-            self.stock_table.setItem(row, 1, qitem(r["name"]))
-            self.stock_table.setItem(row, 2, qitem(r["location"] or ""))
-
-            unit = r["unit"] or ""
 
             qty_text = f"{qty} {unit}".strip()
             safety_text = f"{safety} {unit}".strip()
 
-            self.stock_table.setItem(row, 3, qitem(qty_text))  # 在庫数
-            self.stock_table.setItem(row, 4, qitem(safety_text))  # 安全在庫
+            status = "OK" if qty >= safety else "不足"
 
-            st_item = qitem(status)
+            self.stock_table.setItem(row, 0, qitem(code))
+            self.stock_table.setItem(row, 1, qitem(name))
+            self.stock_table.setItem(row, 2, qitem(location))
+            self.stock_table.setItem(row, 3, qitem(qty_text))
+            self.stock_table.setItem(row, 4, qitem(safety_text))
+
+            status_item = qitem(status)
             if status == "不足":
-                st_item.setForeground(Qt.red)
-            self.stock_table.setItem(row, 5, st_item)
+                status_item.setForeground(Qt.red)
+            self.stock_table.setItem(row, 5, status_item)
 
         self.stock_table.resizeColumnsToContents()
 
@@ -463,8 +445,6 @@ class MainWindow(QMainWindow):
 
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-
-            # ✅ カテゴリなし + 数量/単位分離
             w.writerow([
                 "コード", "備品名", "保管場所",
                 "在庫数", "単位",
@@ -481,9 +461,9 @@ class MainWindow(QMainWindow):
                     r["code"],
                     r["name"],
                     r["location"] or "",
-                    qty,  # ← 数字
-                    unit,  # ← 単位
-                    safety,  # ← 数字
+                    qty,
+                    unit,
+                    safety,
                     status
                 ])
 
@@ -503,7 +483,6 @@ class MainWindow(QMainWindow):
         keyword = self.stock_search.text().strip()
         rows = self.db.list_items(keyword)
 
-        # ✅ カテゴリなし + 数量/単位分離
         headers = [
             "コード", "備品名", "保管場所",
             "在庫数", "単位",
@@ -521,13 +500,12 @@ class MainWindow(QMainWindow):
                 r["code"],
                 r["name"],
                 r["location"] or "",
-                qty,  # ← 数字（SUM可）
-                unit,  # ← 単位
-                safety,  # ← 数字（SUM可）
+                qty,
+                unit,
+                safety,
                 status
             ])
 
-        # 列幅（好看一点，可选）
         widths = [14, 26, 20, 10, 8, 10, 10]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
@@ -535,15 +513,16 @@ class MainWindow(QMainWindow):
         wb.save(path)
         info(self, "完了", "Excelを出力しました。")
 
-    # ---- Tab: IN
+    # 入庫
     def _build_in_tab(self):
         layout = QVBoxLayout()
         form = QFormLayout()
 
+        # -- コード入力 --
         self.in_code = QLineEdit()
-        self.in_code.setPlaceholderText("コードをスキャン（例：10001）")
         self.in_code.returnPressed.connect(self._in_load_item)
 
+        # -- 備品情報表示 --
         self.in_name = QLabel("-")
         self.in_stock = QLabel("-")
 
@@ -558,15 +537,13 @@ class MainWindow(QMainWindow):
         qty_row.addWidget(self.in_unit_label)
         qty_row.addStretch()
 
+        # -- 購入先 / 担当者 / メモ --
         self.in_supplier = QLineEdit()
-        self.in_supplier.setPlaceholderText("例：ツルヤ / アマゾン")
-
         self.in_user = QLineEdit()
-        self.in_user.setPlaceholderText("例：王 / 竹内")
-
         self.in_memo = QTextEdit()
-        self.in_memo.setPlaceholderText("メモ（任意）")
+        self.in_memo.setPlaceholderText("任意")
 
+        # -- ボタン --
         btn_row = QHBoxLayout()
 
         dummy = QLabel()
@@ -582,6 +559,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(btn_save)
         btn_row.addStretch()
 
+        # -- 表示順 --
         form.addRow("コード（スキャン）", self.in_code)
         form.addRow("備品名", self.in_name)
         form.addRow("現在庫", self.in_stock)
@@ -627,6 +605,8 @@ class MainWindow(QMainWindow):
 
         self.db.in_stock(int(item["id"]), qty, supplier, user, memo)
         info(self, "完了", "入庫登録しました。")
+
+        # -- 入力内容クリア --
         self.in_code.clear()
         self.in_supplier.clear()
         self.in_memo.clear()
@@ -635,22 +615,20 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         self.in_code.setFocus()
 
-    # ---- Tab: OUT
+    # 出庫
     def _build_out_tab(self):
         layout = QVBoxLayout()
         form = QFormLayout()
 
-        # --- コード ---
+        # -- コード入力 --
         self.out_code = QLineEdit()
-        self.out_code.setPlaceholderText("コードをスキャン（例：10001）")
         self.out_code.returnPressed.connect(self._out_load_item)
 
-        # --- 表示 ---
+        # -- 備品情報表示 --
         self.out_name = QLabel("-")
         self.out_stock = QLabel("-")
         self.out_safety = QLabel("-")
 
-        # --- 数量 + 単位 ---
         self.out_qty = QSpinBox()
         self.out_qty.setRange(1, 100000)
         self.out_qty.setValue(1)
@@ -662,21 +640,14 @@ class MainWindow(QMainWindow):
         qty_row.addWidget(self.out_unit_label)
         qty_row.addStretch()
 
-        # --- 納品先 / 発注者 / 総務課納品担当者 ---
+        # -- 納品先 / 発注者 / 総務課納品担当者 / メモ --
         self.out_destination = QLineEdit()
-        self.out_destination.setPlaceholderText("例：大王庵 / 和さび堂")
-
         self.out_requester = QLineEdit()
-        self.out_requester.setPlaceholderText("例：矢ノ口 / 手塚")
-
         self.out_admin_handler = QLineEdit()
-        self.out_admin_handler.setPlaceholderText("例：王 / 竹内")
-
-        # --- メモ ---
         self.out_memo = QTextEdit()
-        self.out_memo.setPlaceholderText("メモ（任意）")
+        self.out_memo.setPlaceholderText("任意")
 
-        # --- ボタン ---
+        # -- ボタン --
         btn_row = QHBoxLayout()
 
         dummy = QLabel()
@@ -692,7 +663,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(btn_save)
         btn_row.addStretch()
 
-        # --- 指定順 ---
+        # -- 表示順 --
         form.addRow("コード（スキャン）", self.out_code)
         form.addRow("備品名", self.out_name)
         form.addRow("現在庫", self.out_stock)
@@ -733,23 +704,18 @@ class MainWindow(QMainWindow):
         if not code:
             warn(self, "入力エラー", "コードを入力してください。")
             return
-
         item = self.db.get_item_by_code(code)
         if not item:
             warn(self, "未登録", "このコードは備品マスタに存在しません。")
             return
 
         qty = int(self.out_qty.value())
-
-        # ✅ 在庫qtyがget_item_by_codeに無い可能性があるため安全に取得
         now_qty = int(item["qty"]) if "qty" in item.keys() else 0
         safety = int(item["safety_stock"] or 0)
-
-        # Force allowed: warn only
         if now_qty - qty < 0:
             ret = QMessageBox.question(
                 self,
-                "在庫不足（強制出庫）",
+                "在庫不足",
                 f"現在庫={now_qty}、出庫={qty} → 在庫がマイナスになります。\n強制出庫しますか？",
                 QMessageBox.Yes | QMessageBox.No
             )
@@ -766,56 +732,47 @@ class MainWindow(QMainWindow):
         requester = self.out_requester.text().strip()
         admin_handler = self.out_admin_handler.text().strip()
         memo = self.out_memo.toPlainText().strip()
-
         self.db.out_stock(int(item["id"]), qty, destination, requester, admin_handler, memo)
-
         info(self, "完了", "出庫登録しました。")
 
-        # ✅ 入力欄クリア（理由は廃止）
+        # -- 入力内容クリア --
         self.out_code.clear()
         self.out_destination.clear()
         self.out_requester.clear()
         self.out_admin_handler.clear()
         self.out_memo.clear()
-
         self.out_name.setText("-")
         self.out_stock.setText("-")
         self.out_safety.setText("-")
         self.out_unit_label.setText("")
-
         self.refresh_all()
         self.out_code.setFocus()
 
-    # ---- Tab: Master
+    # 備品マスタ
     def _build_master_tab(self):
         layout = QVBoxLayout()
-
-        # ---- form（把コード也放进来，保证对齐）----
         form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignLeft)
 
+        # -- コード入力 --
         self.master_code = QLineEdit()
         self.master_code.setPlaceholderText("編集はコードで検索")
-        # ✅ 回车自动检索
         self.master_code.returnPressed.connect(self.master_find)
 
-        btn_find = QPushButton("検索")
-        btn_find.clicked.connect(self.master_find)
-
-        # ✅ 代码输入框 + 搜索按钮放在同一行（并且属于 form）
+        # -- 検索 / 新規ボタン --
         code_row = QHBoxLayout()
-        code_row.setContentsMargins(0, 0, 0, 0)
-
+        btn_find = QPushButton("検索")
         btn_new = QPushButton("新規（自動採番）")
+        btn_find.clicked.connect(self.master_find)
         btn_new.clicked.connect(self.master_new)
 
+        code_row.setContentsMargins(0, 0, 0, 0)
         code_row.addWidget(self.master_code)
         code_row.addWidget(btn_find)
         code_row.addWidget(btn_new)
         code_row.addStretch()
         form.addRow("コード", code_row)
 
-        # ---- 其他字段（保持你的原样）----
+        # -- 備品情報表示 --
         self.master_name = QLineEdit()
         self.master_location = QLineEdit()
         self.master_unit = QLineEdit()
@@ -824,13 +781,14 @@ class MainWindow(QMainWindow):
         self.master_safety.setFixedWidth(120)
         self.master_note = QTextEdit()
 
-        form.addRow("備品名*", self.master_name)
+        # -- 表示順 --
+        form.addRow("備品名", self.master_name)
         form.addRow("保管場所", self.master_location)
         form.addRow("単位", self.master_unit)
         form.addRow("安全在庫", self.master_safety)
         form.addRow("メモ", self.master_note)
 
-        # ---- 按钮行（原 top 的其余按钮移到下面，不影响对齐）----
+        # -- ボタン --
         btn_row = QHBoxLayout()
 
         dummy = QLabel()
@@ -839,7 +797,6 @@ class MainWindow(QMainWindow):
 
         btn_save = QPushButton("保存")
         btn_label = QPushButton("ラベル作成（PNG）")
-
         btn_save.clicked.connect(self.master_save)
         btn_label.clicked.connect(self.master_make_label)
 
@@ -1291,3 +1248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
