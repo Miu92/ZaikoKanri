@@ -1,0 +1,104 @@
+def deactivate_item_free_code(self, item_id: int):
+    cur = self.conn.cursor()
+    cur.execute("SELECT code FROM items WHERE id=?;", (item_id,))
+    row = cur.fetchone()
+    if not row:
+        raise ValueError("item not found")
+
+    old_code = row["code"]
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    retired_code = f"X{old_code}_{ts}"  # 例：X10001_20260214153020
+
+    cur.execute("""
+        UPDATE items
+        SET is_active=0,
+            code=?
+        WHERE id=?;
+    """, (retired_code, item_id))
+    self.conn.commit()
+
+
+
+
+
+
+
+
+
+
+btn_del = QPushButton("削除（停用）")
+btn_del.clicked.connect(self.master_delete)
+
+# 你放到按钮行里合适的位置，比如保存旁边
+btn_row.addWidget(btn_del)
+
+
+
+
+
+
+
+
+
+
+
+def master_delete(self):
+    if self._master_item_id is None:
+        warn(self, "削除", "先にコードで検索して、削除する備品を表示してください。")
+        return
+
+    code = self.master_code.text().strip()
+    name = self.master_name.text().strip()
+
+    ret = QMessageBox.question(
+        self,
+        "削除（停用）確認",
+        f"以下の備品を削除（停用）します。\n\nコード: {code}\n備品名: {name}\n\nよろしいですか？",
+        QMessageBox.Yes | QMessageBox.No
+    )
+    if ret != QMessageBox.Yes:
+        return
+
+    try:
+        self.db.deactivate_item_free_code(self._master_item_id)
+    except Exception as e:
+        warn(self, "エラー", f"削除（停用）に失敗しました：{e}")
+        return
+
+    info(self, "完了", "削除（停用）しました。番号は再利用できます。")
+
+    # 画面クリア
+    self._master_item_id = None
+    self.master_code.clear()
+    self.master_name.clear()
+    self.master_location.clear()
+    self.master_unit.clear()
+    self.master_safety.setValue(0)
+    self.master_note.clear()
+
+    self.refresh_all()
+    self.master_code.setFocus()
+
+
+
+
+
+
+
+
+
+
+def get_next_code(self) -> str:
+    cur = self.conn.cursor()
+    cur.execute("SELECT code FROM items WHERE code GLOB '[0-9]*';")
+    used = set()
+    for row in cur.fetchall():
+        try:
+            used.add(int(row["code"]))
+        except:
+            pass
+
+    n = 10001
+    while n in used:
+        n += 1
+    return str(n)
