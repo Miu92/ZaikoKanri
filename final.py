@@ -76,8 +76,17 @@ class DB:
         self.conn.close()
 
     def get_next_code(self) -> str:
+        """
+        備品コード：
+        - 数字のみ
+        - 10001 から開始
+        - 欠番があれば最小の欠番を採番
+        """
         cur = self.conn.cursor()
-        cur.execute("SELECT code FROM items WHERE code GLOB '[0-9]*';")
+        cur.execute("""
+            SELECT code FROM items 
+            WHERE code GLOB '[0-9]*';
+        """)
         used = set()
         for row in cur.fetchall():
             try:
@@ -92,7 +101,10 @@ class DB:
 
     def deactivate_item_free_code(self, item_id: int):
         cur = self.conn.cursor()
-        cur.execute("SELECT code FROM items WHERE id=?;", (item_id,))
+        cur.execute("""
+            SELECT code FROM items 
+            WHERE id=?;
+        """, (item_id,))
         row = cur.fetchone()
         if not row:
             raise ValueError("item not found")
@@ -216,7 +228,7 @@ class DB:
         self.conn.commit()
 
     def add_in_tx(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO transactions
@@ -226,7 +238,7 @@ class DB:
         self.conn.commit()
 
     def add_out_tx(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO transactions
@@ -346,16 +358,16 @@ class MainWindow(QMainWindow):
         year = int(year_text)
 
         if month_text == "全部":
-            start = f"{year:04d}-01-01 00:00:00"
-            end = f"{year + 1:04d}-01-01 00:00:00"
+            start = f"{year:04d}-01-01 00:00"
+            end = f"{year + 1:04d}-01-01 00:00"
             return f"{year:04d}", start, end
 
         month = int(month_text)
-        start = f"{year:04d}-{month:02d}-01 00:00:00"
+        start = f"{year:04d}-{month:02d}-01 00:00"
         if month == 12:
-            end = f"{year + 1:04d}-01-01 00:00:00"
+            end = f"{year + 1:04d}-01-01 00:00"
         else:
-            end = f"{year:04d}-{month + 1:02d}-01 00:00:00"
+            end = f"{year:04d}-{month + 1:02d}-01 00:00"
         return f"{year:04d}-{month:02d}", start, end
 
     def closeEvent(self, event):
@@ -1302,5 +1314,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
