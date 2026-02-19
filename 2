@@ -1,0 +1,102 @@
+initialize_population
+
+# 久賀(22)の公休日を13日にする（有休は含めない）
+employee = 22
+emp_index = employee - 1
+
+paid_rest_days = set(paid_rest_days_dict.get(employee, []))
+desired_rest_days = set(desired_rest_days_dict.get(employee, []))
+
+# 先全部设为出勤
+individual[:, emp_index] = 1
+
+# 有休固定休
+for day in paid_rest_days:
+    if day <= days:
+        individual[day - 1, emp_index] = 0
+
+# 希望日先休
+for day in desired_rest_days:
+    if day <= days:
+        individual[day - 1, emp_index] = 0
+
+# 计算目前公休日数量（排除有休）
+public_rest_days = sum(
+    1 for d in range(1, days + 1)
+    if individual[d - 1, emp_index] == 0 and d not in paid_rest_days
+)
+
+remaining = 13 - public_rest_days
+
+if remaining > 0:
+    candidates = [
+        d for d in range(1, days + 1)
+        if individual[d - 1, emp_index] == 1
+    ]
+    if len(candidates) >= remaining:
+        extra_days = np.random.choice(candidates, remaining, replace=False)
+        for day in extra_days:
+            individual[day - 1, emp_index] = 0
+
+
+
+
+
+
+
+
+
+fitness
+
+# 久賀(22) 公休日必须13天（不含有休）
+kuga_index = 21
+paid_rest_days = set(paid_rest_days_dict.get(22, []))
+
+public_rest_days = sum(
+    1 for d in range(DAYS)
+    if individual[d, kuga_index] == 0 and (d + 1) not in paid_rest_days
+)
+
+if public_rest_days != 13:
+    score -= abs(13 - public_rest_days) * 20
+
+
+    
+
+
+
+
+
+
+
+
+
+mutate
+
+# 久賀(22) 公休日维持13天（不含有休）
+kuga_index = 21
+paid_rest_days = set(paid_rest_days_dict.get(22, []))
+
+public_rest_days = sum(
+    1 for d in range(DAYS)
+    if individual[d, kuga_index] == 0 and (d + 1) not in paid_rest_days
+)
+
+if public_rest_days < 13:
+    candidates = [
+        d for d in range(DAYS)
+        if individual[d, kuga_index] == 1
+    ]
+    if candidates:
+        day = np.random.choice(candidates)
+        individual[day, kuga_index] = 0
+
+elif public_rest_days > 13:
+    candidates = [
+        d for d in range(DAYS)
+        if individual[d, kuga_index] == 0 and (d + 1) not in paid_rest_days
+    ]
+    if candidates:
+        day = np.random.choice(candidates)
+        individual[day, kuga_index] = 1
+
