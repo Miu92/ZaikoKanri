@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 APP_TITLE = "備品在庫管理"
-BASE_DIR = r"\\dionas\管理部\備品管理"
+BASE_DIR = r"\\dionas\管理部\備品管理\システム関連"
 os.makedirs(BASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 LABEL_DIR = os.path.join(BASE_DIR, "labels")
@@ -1311,4 +1311,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
