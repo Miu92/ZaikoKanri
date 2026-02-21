@@ -1044,7 +1044,6 @@ class MainWindow(QMainWindow):
         self.in_hist_table.resizeColumnsToContents()
 
     def export_in_history_csv(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.in_hist_year.currentText(),
             self.in_hist_month.currentText()
@@ -1081,7 +1080,6 @@ class MainWindow(QMainWindow):
         info(self, "完了", "入庫履歴をCSV出力しました。")
 
     def export_in_history_excel(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.in_hist_year.currentText(),
             self.in_hist_month.currentText()
@@ -1116,7 +1114,7 @@ class MainWindow(QMainWindow):
                 r["memo"] or ""
             ])
 
-        # 列幅
+        # -- 列の幅 --
         widths = [26, 14, 20, 8, 8, 18, 14, 26]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
@@ -1124,17 +1122,16 @@ class MainWindow(QMainWindow):
         wb.save(path)
         info(self, "完了", "入庫履歴をExcel出力しました。")
 
-    # ---- Tab: out History
+    # 出庫履歴
     def _build_out_history_tab(self):
         layout = QVBoxLayout()
         top = QHBoxLayout()
 
-        # 🔽 年/月
+        # -- 年/月選択 --
         self.out_hist_year = QComboBox()
         self.out_hist_month = QComboBox()
 
         self.out_hist_year.addItem("全部")
-        # 先用固定范围（最稳）；你也可以改成动态取DB最小最大年份
         for y in range(2026, 2077):
             self.out_hist_year.addItem(str(y))
 
@@ -1142,7 +1139,6 @@ class MainWindow(QMainWindow):
         for m in range(1, 13):
             self.out_hist_month.addItem(f"{m:02d}")
 
-        # year=全部时，month强制回到全部（避免“未指定年却指定月”的歧义）
         def _out_year_changed():
             if self.out_hist_year.currentText() == "全部":
                 self.out_hist_month.setCurrentText("全部")
@@ -1151,20 +1147,19 @@ class MainWindow(QMainWindow):
         self.out_hist_year.currentIndexChanged.connect(_out_year_changed)
         self.out_hist_month.currentIndexChanged.connect(self.refresh_out_history)
 
+        # -- 検索欄 --
         self.out_hist_search = QLineEdit()
         self.out_hist_search.setPlaceholderText("コード / 備品名 / 納品先 / 発注者で検索")
         self.out_hist_search.returnPressed.connect(self.refresh_out_history)
 
+        # -- ボタン --
         btn_search = QPushButton("検索")
-        btn_search.clicked.connect(self.refresh_out_history)
-
         btn_csv = QPushButton("CSV出力")
-        btn_csv.clicked.connect(self.export_out_history_csv)
-
         btn_xlsx = QPushButton("Excel出力")
+        btn_search.clicked.connect(self.refresh_out_history)
+        btn_csv.clicked.connect(self.export_out_history_csv)
         btn_xlsx.clicked.connect(self.export_out_history_excel)
 
-        # top 配置（年/月放搜索框左侧）
         top.addWidget(QLabel("年"))
         top.addWidget(self.out_hist_year)
         top.addWidget(QLabel("月"))
@@ -1176,6 +1171,7 @@ class MainWindow(QMainWindow):
         top.addWidget(btn_csv)
         top.addWidget(btn_xlsx)
 
+        # -- 表示欄 --
         self.out_hist_table = QTableWidget(0, 9)
         self.out_hist_table.setHorizontalHeaderLabels(
             ["日時", "コード", "備品名", "数量", "単位",
@@ -1217,7 +1213,6 @@ class MainWindow(QMainWindow):
         self.out_hist_table.resizeColumnsToContents()
 
     def export_out_history_csv(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.out_hist_year.currentText(),
             self.out_hist_month.currentText()
@@ -1255,7 +1250,6 @@ class MainWindow(QMainWindow):
         info(self, "完了", "出庫履歴をCSV出力しました。")
 
     def export_out_history_excel(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.out_hist_year.currentText(),
             self.out_hist_month.currentText()
@@ -1317,3 +1311,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
