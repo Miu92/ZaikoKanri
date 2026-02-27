@@ -113,6 +113,38 @@ def get_next_code(self) -> str:
 
 
 
+import pandas as pd
+
+file_path = "your_file.xlsx"   # 改成你的文件名
+
+# 读取原始数据（默认读取第一个sheet）
+df = pd.read_excel(file_path)
+
+# 数据类型处理
+df["数量"] = pd.to_numeric(df["数量"], errors="coerce")
+df["コード"] = df["コード"].astype(str)
+
+# ===== 按コード汇总 =====
+summary = df.groupby("コード", as_index=False).agg({
+    "備品名": "first",   # 每个code取第一个備品名
+    "数量": "sum",      # 数量求和
+    "単位": "first"     # 每个code取第一个単位
+})
+
+# ===== 调整列顺序 =====
+summary = summary[["コード", "備品名", "数量", "単位"]]
+
+# ===== 写入原Excel的新Sheet =====
+with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    summary.to_excel(writer, sheet_name="コード別集計", index=False)
+
+print("完成：已在原文件新增『コード別集計』Sheet")
+
+
+
+
+
+
 
 
 
