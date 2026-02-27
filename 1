@@ -1,3 +1,7 @@
+python -m PyInstaller --onefile --add-data "fonts,fonts" --hidden-import=barcode --hidden-import=PIL --collect-all barcode --collect-all PIL --noconsole --name 備品管理 inventory_app.py
+
+
+
 def deactivate_item_free_code(self, item_id: int):
     cur = self.conn.cursor()
     cur.execute("SELECT code FROM items WHERE id=?;", (item_id,))
