@@ -1,4 +1,5 @@
 import os
+import sys
 import sqlite3
 from datetime import datetime
 
@@ -19,18 +20,25 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 APP_TITLE = "備品在庫管理"
-BASE_DIR = os.path.join(os.path.expanduser("~"), "Documents", "BihinKanri")
+BASE_DIR = r"\\dionas\管理部\備品管理\システム関連"
 os.makedirs(BASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(BASE_DIR, "inventory.db")
 LABEL_DIR = os.path.join(BASE_DIR, "labels")
+os.makedirs(LABEL_DIR, exist_ok=True)
 
 
 # ======== データベース ========
 class DB:
     def __init__(self, path: str = DB_FILE):
         self.path = path
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA busy_timeout = 30000;")
+        try:
+            self.conn.execute("PRAGMA journal_mode = WAL;")
+        except Exception:
+            self.conn.execute("PRAGMA journal_mode = DELETE;")
+        self.conn.execute("PRAGMA synchronous = NORMAL;")
         self._init_schema()
 
     def _init_schema(self):
@@ -150,7 +158,12 @@ class DB:
         cur.execute("""
             SELECT i.*, COALESCE(s.qty,0) as qty
             FROM items i
-            LEFT JOIN stock s ON s.item_id=i.id
+            LEFT JOIN (
+                SELECT item_id,
+                       SUM(CASE WHEN type='IN' THEN qty ELSE -qty END) AS qty
+                FROM transactions
+                GROUP BY item_id
+            ) s ON s.item_id = i.id
             WHERE i.code=? AND i.is_active=1;
         """, (code,))
         return cur.fetchone()
@@ -159,7 +172,14 @@ class DB:
         kw = f"%{(keyword or '').strip()}%"
         cur = self.conn.cursor()
         cur.execute("""
-            SELECT i.*, COALESCE(s.qty, 0) AS qty
+            SELECT 
+                i.*, 
+                COALESCE(s.qty, 0) AS qty,
+                CASE
+                    WHEN COALESCE (s.qty, 0) >= COALESCE(i.safety_stock, 0)
+                    THEN 'OK'
+                    ELSE '不足'
+                END AS status
             FROM items i
             LEFT JOIN (
                 SELECT item_id, SUM(CASE WHEN type='IN' THEN qty ELSE -qty END) AS qty
@@ -173,9 +193,10 @@ class DB:
                  OR COALESCE(i.location,'') LIKE ?
                  OR COALESCE(i.unit,'') LIKE ?
                  OR COALESCE(i.note,'') LIKE ?
+                 OR status LIKE ?
               )
             ORDER BY CAST(i.code AS INTEGER) ASC;
-        """, (kw, kw, kw, kw, kw))
+        """, (kw, kw, kw, kw, kw, kw))
         return cur.fetchall()
 
     def list_transactions_by_type(self, tx_type: str, keyword: str = "", limit: int = 5000,
@@ -221,12 +242,6 @@ class DB:
 
         return cur.fetchall()
 
-    def _update_stock(self, item_id: int, delta: int):
-        cur = self.conn.cursor()
-        cur.execute("INSERT OR IGNORE INTO stock (item_id, qty) VALUES (?, 0);", (item_id,))
-        cur.execute("UPDATE stock SET qty = qty + ? WHERE item_id=?;", (delta, item_id))
-        self.conn.commit()
-
     def add_in_tx(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         cur = self.conn.cursor()
@@ -248,12 +263,15 @@ class DB:
         self.conn.commit()
 
     def in_stock(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
-        self._update_stock(item_id, qty)
         self.add_in_tx(item_id, qty, supplier, user, memo)
 
     def out_stock(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
-        self._update_stock(item_id, -qty)
         self.add_out_tx(item_id, qty, destination, requester, admin_handler, memo)
+
+    def delete_transaction(self, tx_id: int):
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM transactions WHERE id=?;", (tx_id,))
+        self.conn.commit()
 
 
 # ======== バーコード作り ========
@@ -281,14 +299,15 @@ def compose_label_png(code: str, name: str) -> str:
     img = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(img)
 
-    font_big = None
-    for f in ["meiryo.ttc", "MSYH.TTC", "arial.ttf"]:
-        try:
-            font_big = ImageFont.truetype(f, 44)
-            break
-        except:
-            continue
-    if font_big is None:
+    try:
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(__file__)
+        font_path = os.path.join(base_path, "fonts", "meiryo.ttc")
+        font_big = ImageFont.truetype(font_path, 44)
+    except Exception as e:
+        print("エラー：", e)
         font_big = ImageFont.load_default()
 
     # 備品名
@@ -439,7 +458,7 @@ class MainWindow(QMainWindow):
             qty_text = f"{qty} {unit}".strip()
             safety_text = f"{safety} {unit}".strip()
 
-            status = "OK" if qty >= safety else "不足"
+            status = r["status"]
 
             self.stock_table.setItem(row, 0, qitem(code))
             self.stock_table.setItem(row, 1, qitem(name))
@@ -943,29 +962,26 @@ class MainWindow(QMainWindow):
         self.master_unit.clear()
         self.master_safety.setValue(0)
         self.master_note.clear()
-
         self.refresh_all()
         self.master_code.setFocus()
 
-    # ---- Tab: in History
+    # 入庫履歴
     def _build_in_history_tab(self):
         layout = QVBoxLayout()
         top = QHBoxLayout()
 
-        # 🔽 年/月
+        # -- 年/月選択 --
         self.in_hist_year = QComboBox()
         self.in_hist_month = QComboBox()
 
         self.in_hist_year.addItem("全部")
-        # 先用固定范围（最稳）；你也可以改成动态取DB最小最大年份
-        for y in range(2026, 2037):
+        for y in range(2026, 2077):
             self.in_hist_year.addItem(str(y))
 
         self.in_hist_month.addItem("全部")
         for m in range(1, 13):
             self.in_hist_month.addItem(f"{m:02d}")
 
-        # year=全部时，month强制回到全部（避免“未指定年却指定月”的歧义）
         def _in_year_changed():
             if self.in_hist_year.currentText() == "全部":
                 self.in_hist_month.setCurrentText("全部")
@@ -974,20 +990,21 @@ class MainWindow(QMainWindow):
         self.in_hist_year.currentIndexChanged.connect(_in_year_changed)
         self.in_hist_month.currentIndexChanged.connect(self.refresh_in_history)
 
+        # -- 検索欄 --
         self.in_hist_search = QLineEdit()
         self.in_hist_search.setPlaceholderText("コード / 備品名 / 担当者 / 購入先で検索")
         self.in_hist_search.returnPressed.connect(self.refresh_in_history)
 
+        # -- ボタン --
         btn_search = QPushButton("検索")
-        btn_search.clicked.connect(self.refresh_in_history)
-
         btn_csv = QPushButton("CSV出力")
-        btn_csv.clicked.connect(self.export_in_history_csv)
-
         btn_xlsx = QPushButton("Excel出力")
+        btn_delete = QPushButton("削除")
+        btn_search.clicked.connect(self.refresh_in_history)
+        btn_csv.clicked.connect(self.export_in_history_csv)
         btn_xlsx.clicked.connect(self.export_in_history_excel)
+        btn_delete.clicked.connect(self.delete_in_history)
 
-        # top 配置（年/月放搜索框左侧）
         top.addWidget(QLabel("年"))
         top.addWidget(self.in_hist_year)
         top.addWidget(QLabel("月"))
@@ -995,11 +1012,12 @@ class MainWindow(QMainWindow):
 
         top.addWidget(self.in_hist_search)
         top.addWidget(btn_search)
+        top.addWidget(btn_delete)
         top.addStretch()
         top.addWidget(btn_csv)
         top.addWidget(btn_xlsx)
 
-        # ✅ 7 -> 8列（数量と単位を分離）
+        # -- 表示欄 --
         self.in_hist_table = QTableWidget(0, 8)
         self.in_hist_table.setHorizontalHeaderLabels(
             ["日時", "コード", "備品名", "数量", "単位", "購入先", "担当者", "メモ"]
@@ -1010,6 +1028,29 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
         layout.addWidget(self.in_hist_table)
         self.tab_in_history.setLayout(layout)
+
+    def delete_in_history(self):
+        row = self.in_hist_table.currentRow()
+        if row < 0:
+            warn(self, "削除", "削除する行を選択してください。")
+            return
+
+        item = self.in_hist_table.item(row, 0)
+        tx_id = item.data(Qt.UserRole)
+
+        ret = QMessageBox.question(
+            self,
+            "削除確認",
+            "この入庫履歴を削除しますか？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        self.db.delete_transaction(tx_id)
+        info(self, "完了", "削除しました。")
+
+        self.refresh_all()
 
     def refresh_in_history(self):
         kw = self.in_hist_search.text().strip()
@@ -1029,19 +1070,20 @@ class MainWindow(QMainWindow):
             unit = r["unit"] or ""
             qty = int(r["qty"])
 
-            self.in_hist_table.setItem(row, 0, qitem(r["ts"]))
+            ts_item = qitem(r["ts"])
+            ts_item.setData(Qt.UserRole, r["id"])  # 存 transaction id
+            self.in_hist_table.setItem(row, 0, ts_item)
             self.in_hist_table.setItem(row, 1, qitem(r["code"]))
             self.in_hist_table.setItem(row, 2, qitem(r["name"]))
-            self.in_hist_table.setItem(row, 3, qitem(str(qty)))  # 数量
-            self.in_hist_table.setItem(row, 4, qitem(unit))  # 単位
-            self.in_hist_table.setItem(row, 5, qitem(r["supplier"] or ""))  # 購入先
-            self.in_hist_table.setItem(row, 6, qitem(r["user"] or ""))  # 担当者
-            self.in_hist_table.setItem(row, 7, qitem(r["memo"] or ""))  # メモ
+            self.in_hist_table.setItem(row, 3, qitem(str(qty)))
+            self.in_hist_table.setItem(row, 4, qitem(unit))
+            self.in_hist_table.setItem(row, 5, qitem(r["supplier"] or ""))
+            self.in_hist_table.setItem(row, 6, qitem(r["user"] or ""))
+            self.in_hist_table.setItem(row, 7, qitem(r["memo"] or ""))
 
         self.in_hist_table.resizeColumnsToContents()
 
     def export_in_history_csv(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.in_hist_year.currentText(),
             self.in_hist_month.currentText()
@@ -1078,7 +1120,6 @@ class MainWindow(QMainWindow):
         info(self, "完了", "入庫履歴をCSV出力しました。")
 
     def export_in_history_excel(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.in_hist_year.currentText(),
             self.in_hist_month.currentText()
@@ -1113,7 +1154,7 @@ class MainWindow(QMainWindow):
                 r["memo"] or ""
             ])
 
-        # 列幅
+        # -- 列の幅 --
         widths = [26, 14, 20, 8, 8, 18, 14, 26]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
@@ -1121,25 +1162,23 @@ class MainWindow(QMainWindow):
         wb.save(path)
         info(self, "完了", "入庫履歴をExcel出力しました。")
 
-    # ---- Tab: out History
+    # 出庫履歴
     def _build_out_history_tab(self):
         layout = QVBoxLayout()
         top = QHBoxLayout()
 
-        # 🔽 年/月
+        # -- 年/月選択 --
         self.out_hist_year = QComboBox()
         self.out_hist_month = QComboBox()
 
         self.out_hist_year.addItem("全部")
-        # 先用固定范围（最稳）；你也可以改成动态取DB最小最大年份
-        for y in range(2026, 2037):
+        for y in range(2026, 2077):
             self.out_hist_year.addItem(str(y))
 
         self.out_hist_month.addItem("全部")
         for m in range(1, 13):
             self.out_hist_month.addItem(f"{m:02d}")
 
-        # year=全部时，month强制回到全部（避免“未指定年却指定月”的歧义）
         def _out_year_changed():
             if self.out_hist_year.currentText() == "全部":
                 self.out_hist_month.setCurrentText("全部")
@@ -1148,20 +1187,21 @@ class MainWindow(QMainWindow):
         self.out_hist_year.currentIndexChanged.connect(_out_year_changed)
         self.out_hist_month.currentIndexChanged.connect(self.refresh_out_history)
 
+        # -- 検索欄 --
         self.out_hist_search = QLineEdit()
         self.out_hist_search.setPlaceholderText("コード / 備品名 / 納品先 / 発注者で検索")
         self.out_hist_search.returnPressed.connect(self.refresh_out_history)
 
+        # -- ボタン --
         btn_search = QPushButton("検索")
-        btn_search.clicked.connect(self.refresh_out_history)
-
         btn_csv = QPushButton("CSV出力")
-        btn_csv.clicked.connect(self.export_out_history_csv)
-
         btn_xlsx = QPushButton("Excel出力")
+        btn_delete = QPushButton("削除")
+        btn_search.clicked.connect(self.refresh_out_history)
+        btn_csv.clicked.connect(self.export_out_history_csv)
         btn_xlsx.clicked.connect(self.export_out_history_excel)
+        btn_delete.clicked.connect(self.delete_out_history)
 
-        # top 配置（年/月放搜索框左侧）
         top.addWidget(QLabel("年"))
         top.addWidget(self.out_hist_year)
         top.addWidget(QLabel("月"))
@@ -1169,10 +1209,12 @@ class MainWindow(QMainWindow):
 
         top.addWidget(self.out_hist_search)
         top.addWidget(btn_search)
+        top.addWidget(btn_delete)
         top.addStretch()
         top.addWidget(btn_csv)
         top.addWidget(btn_xlsx)
 
+        # -- 表示欄 --
         self.out_hist_table = QTableWidget(0, 9)
         self.out_hist_table.setHorizontalHeaderLabels(
             ["日時", "コード", "備品名", "数量", "単位",
@@ -1184,6 +1226,29 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
         layout.addWidget(self.out_hist_table)
         self.tab_out_history.setLayout(layout)
+
+    def delete_out_history(self):
+        row = self.out_hist_table.currentRow()
+        if row < 0:
+            warn(self, "削除", "削除する行を選択してください。")
+            return
+
+        item = self.out_hist_table.item(row, 0)
+        tx_id = item.data(Qt.UserRole)
+
+        ret = QMessageBox.question(
+            self,
+            "削除確認",
+            "この出庫履歴を削除しますか？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        self.db.delete_transaction(tx_id)
+        info(self, "完了", "削除しました。")
+
+        self.refresh_all()
 
     def refresh_out_history(self):
         kw = self.out_hist_search.text().strip()
@@ -1201,20 +1266,21 @@ class MainWindow(QMainWindow):
 
             unit = r["unit"] or ""
 
-            self.out_hist_table.setItem(row, 0, qitem(r["ts"]))
+            ts_item = qitem(r["ts"])
+            ts_item.setData(Qt.UserRole, r["id"])
+            self.out_hist_table.setItem(row, 0, ts_item)
             self.out_hist_table.setItem(row, 1, qitem(r["code"]))
             self.out_hist_table.setItem(row, 2, qitem(r["name"]))
             self.out_hist_table.setItem(row, 3, qitem(str(int(r["qty"]))))
             self.out_hist_table.setItem(row, 4, qitem(unit))
-            self.out_hist_table.setItem(row, 5, qitem(r["destination"] or ""))  # 納品先
-            self.out_hist_table.setItem(row, 6, qitem(r["requester"] or ""))  # 発注者
-            self.out_hist_table.setItem(row, 7, qitem(r["admin_handler"] or ""))  # 総務課納品担当者
+            self.out_hist_table.setItem(row, 5, qitem(r["destination"] or ""))
+            self.out_hist_table.setItem(row, 6, qitem(r["requester"] or ""))
+            self.out_hist_table.setItem(row, 7, qitem(r["admin_handler"] or ""))
             self.out_hist_table.setItem(row, 8, qitem(r["memo"] or ""))
 
         self.out_hist_table.resizeColumnsToContents()
 
     def export_out_history_csv(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.out_hist_year.currentText(),
             self.out_hist_month.currentText()
@@ -1243,16 +1309,15 @@ class MainWindow(QMainWindow):
                     r["name"],
                     int(r["qty"]),
                     r["unit"] or "",
-                    r["destination"] or "",  # 納品先
-                    r["requester"] or "",  # 発注者
-                    r["admin_handler"] or "",  # 総務課納品担当者
+                    r["destination"] or "",
+                    r["requester"] or "",
+                    r["admin_handler"] or "",
                     r["memo"] or ""
                 ])
 
         info(self, "完了", "出庫履歴をCSV出力しました。")
 
     def export_out_history_excel(self):
-        # ✅ 年/月过滤
         period, start_ts, end_ts = self._get_period_range(
             self.out_hist_year.currentText(),
             self.out_hist_month.currentText()
@@ -1282,13 +1347,13 @@ class MainWindow(QMainWindow):
                 r["name"],
                 int(r["qty"]),
                 r["unit"] or "",
-                r["destination"] or "",  # 納品先
-                r["requester"] or "",  # 発注者
-                r["admin_handler"] or "",  # 総務課納品担当者
+                r["destination"] or "",
+                r["requester"] or "",
+                r["admin_handler"] or "",
                 r["memo"] or ""
             ])
 
-        # 列幅（見やすく）
+        # -- 列の幅 --
         widths = [26, 14, 20, 8, 8, 14, 14, 18, 26]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
@@ -1314,7 +1379,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
