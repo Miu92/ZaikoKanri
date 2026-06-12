@@ -69,6 +69,7 @@ class DB:
             type TEXT NOT NULL,
             item_id INTEGER NOT NULL,
             qty INTEGER NOT NULL,
+            amount INTEGER DEFAULT 0,
             supplier TEXT,          -- 入庫：購入先
             user TEXT,              -- 入庫：担当者 
             destination TEXT,       -- 出庫：納品先
@@ -78,6 +79,10 @@ class DB:
             FOREIGN KEY(item_id) REFERENCES items(id)
         );
         """)
+        try:
+            self.conn.execute("ALTER TABLE transactions ADD COLUMN amount INTEGER DEFAULT 0;")
+        except:
+            pass
         self.conn.commit()
 
     def close(self):
@@ -242,14 +247,14 @@ class DB:
 
         return cur.fetchall()
 
-    def add_in_tx(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
+    def add_in_tx(self, item_id: int, qty: int, amount: int, supplier: str, user: str, memo: str):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         cur = self.conn.cursor()
         cur.execute("""
             INSERT INTO transactions
-            (ts, type, item_id, qty, supplier, user, memo)
-            VALUES (?, 'IN', ?, ?, ?, ?, ?);
-        """, (ts, item_id, qty, supplier, user, memo))
+            (ts, type, item_id, qty, amount, supplier, user, memo)
+            VALUES (?, 'IN', ?, ?, ?, ?, ?, ?);
+        """, (ts, item_id, qty, amount, supplier, user, memo))
         self.conn.commit()
 
     def add_out_tx(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
@@ -262,8 +267,8 @@ class DB:
         """, (ts, item_id, qty, destination, requester, admin_handler, memo))
         self.conn.commit()
 
-    def in_stock(self, item_id: int, qty: int, supplier: str, user: str, memo: str):
-        self.add_in_tx(item_id, qty, supplier, user, memo)
+    def in_stock(self, item_id: int, qty: int, amount: int, supplier: str, user: str, memo: str):
+        self.add_in_tx(item_id, qty, amount, supplier, user, memo)
 
     def out_stock(self, item_id: int, qty: int, destination: str, requester: str, admin_handler: str, memo: str):
         self.add_out_tx(item_id, qty, destination, requester, admin_handler, memo)
@@ -568,6 +573,7 @@ class MainWindow(QMainWindow):
         self.in_name = QLabel("-")
         self.in_stock = QLabel("-")
 
+        # -- 数量 --
         self.in_qty = QSpinBox()
         self.in_qty.setRange(1, 100000)
         self.in_qty.setValue(1)
@@ -579,8 +585,21 @@ class MainWindow(QMainWindow):
         qty_row.addWidget(self.in_unit_label)
         qty_row.addStretch()
 
-        # -- 購入先 / 担当者 / メモ --
+        # -- 購入先 / 金額 / 担当者 / メモ --
         self.in_supplier = QLineEdit()
+
+        self.in_amount = QSpinBox()
+        self.in_amount.setRange(0, 100000000)
+        self.in_amount.setValue(0)
+        self.in_amount.setFixedWidth(150)
+        self.in_amount.setPrefix("￥")
+        self.in_amount.setGroupSeparatorShown(True)
+
+        amount_row = QHBoxLayout()
+        amount_row.setContentsMargins(0, 0, 0, 0)
+        amount_row.addWidget(self.in_amount)
+        amount_row.addStretch()
+
         self.in_user = QLineEdit()
         self.in_memo = QTextEdit()
         self.in_memo.setPlaceholderText("任意")
@@ -606,6 +625,7 @@ class MainWindow(QMainWindow):
         form.addRow("備品名", self.in_name)
         form.addRow("現在庫", self.in_stock)
         form.addRow("数量", qty_row)
+        form.addRow("金額", self.in_amount)
         form.addRow("購入先", self.in_supplier)
         form.addRow("担当者", self.in_user)
         form.addRow("メモ", self.in_memo)
@@ -641,11 +661,12 @@ class MainWindow(QMainWindow):
             warn(self, "未登録", "このコードは備品マスタに存在しません。")
             return
         qty = int(self.in_qty.value())
+        amount = int(self.in_amount.value())
         supplier = self.in_supplier.text().strip()
         user = self.in_user.text().strip()
         memo = self.in_memo.toPlainText().strip()
 
-        self.db.in_stock(int(item["id"]), qty, supplier, user, memo)
+        self.db.in_stock(int(item["id"]), qty, amount, supplier, user, memo)
         info(self, "完了", "入庫登録しました。")
 
         # -- 入力内容クリア --
@@ -654,6 +675,7 @@ class MainWindow(QMainWindow):
         self.in_user.clear()
         self.in_memo.clear()
         self.in_qty.setValue(1)
+        self.in_amount.setValue(0)
         self.in_name.setText("-")
         self.in_stock.setText("-")
         self.refresh_all()
@@ -1018,9 +1040,9 @@ class MainWindow(QMainWindow):
         top.addWidget(btn_xlsx)
 
         # -- 表示欄 --
-        self.in_hist_table = QTableWidget(0, 8)
+        self.in_hist_table = QTableWidget(0, 9)
         self.in_hist_table.setHorizontalHeaderLabels(
-            ["日時", "コード", "備品名", "数量", "単位", "購入先", "担当者", "メモ"]
+            ["日時", "コード", "備品名", "数量", "単位", "金額", "購入先", "担当者", "メモ"]
         )
         self.in_hist_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.in_hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1070,16 +1092,21 @@ class MainWindow(QMainWindow):
             unit = r["unit"] or ""
             qty = int(r["qty"])
 
+            amount = int(r["amount"] or 0)
+            amount_text = "" if amount == 0 else f"{amount:,}"
+
             ts_item = qitem(r["ts"])
-            ts_item.setData(Qt.UserRole, r["id"])  # 存 transaction id
+            ts_item.setData(Qt.UserRole, r["id"])
             self.in_hist_table.setItem(row, 0, ts_item)
+
             self.in_hist_table.setItem(row, 1, qitem(r["code"]))
             self.in_hist_table.setItem(row, 2, qitem(r["name"]))
             self.in_hist_table.setItem(row, 3, qitem(str(qty)))
             self.in_hist_table.setItem(row, 4, qitem(unit))
-            self.in_hist_table.setItem(row, 5, qitem(r["supplier"] or ""))
-            self.in_hist_table.setItem(row, 6, qitem(r["user"] or ""))
-            self.in_hist_table.setItem(row, 7, qitem(r["memo"] or ""))
+            self.in_hist_table.setItem(row, 5, qitem(amount_text))
+            self.in_hist_table.setItem(row, 6, qitem(r["supplier"] or ""))
+            self.in_hist_table.setItem(row, 7, qitem(r["user"] or ""))
+            self.in_hist_table.setItem(row, 8, qitem(r["memo"] or ""))
 
         self.in_hist_table.resizeColumnsToContents()
 
@@ -1103,7 +1130,7 @@ class MainWindow(QMainWindow):
 
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["日時", "コード", "備品名", "数量", "単位", "購入先", "担当者", "メモ"])
+            w.writerow(["日時", "コード", "備品名", "数量", "単位", "金額", "購入先", "担当者", "メモ"])
 
             for r in rows:
                 w.writerow([
@@ -1112,6 +1139,7 @@ class MainWindow(QMainWindow):
                     r["name"],
                     int(r["qty"]),
                     r["unit"] or "",
+                    int(r["amount"] or 0),
                     r["supplier"] or "",
                     r["user"] or "",
                     r["memo"] or ""
@@ -1136,7 +1164,7 @@ class MainWindow(QMainWindow):
         ws = wb.active
         ws.title = "入庫履歴"
 
-        headers = ["日時", "コード", "備品名", "数量", "単位", "購入先", "担当者", "メモ"]
+        headers = ["日時", "コード", "備品名", "数量", "単位", "金額", "購入先", "担当者", "メモ"]
         ws.append(headers)
 
         kw = self.in_hist_search.text().strip()
@@ -1149,13 +1177,14 @@ class MainWindow(QMainWindow):
                 r["name"],
                 int(r["qty"]),
                 r["unit"] or "",
+                int(r["amount"] or 0),
                 r["supplier"] or "",
                 r["user"] or "",
                 r["memo"] or ""
             ])
 
         # -- 列の幅 --
-        widths = [26, 14, 20, 8, 8, 18, 14, 26]
+        widths = [26, 14, 20, 8, 8, 12, 18, 14, 26]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1379,3 +1408,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
