@@ -1,0 +1,3 @@
+
+
+python -m PyInstaller --onefile --add-data "fonts;fonts" --hidden-import=barcode --hidden-import=PIL --collect-all barcode --collect-all PIL --noconsole --name 備品管理 inventory_app.py
